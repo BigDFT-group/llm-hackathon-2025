@@ -12,3 +12,4 @@ Current list of team members (please add affiliations):
 - Tiffany Abui Degbotse - 
 - Youssef Briki - Université de Montréal, Canada
 - Leonid Didukh - Kyiv Institute of Nuclear Research, Ukraine
+- Abdul Rahman - Pakistan Council of Scientific and Industrial Research- Pakistan 
