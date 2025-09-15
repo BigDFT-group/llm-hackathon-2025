@@ -1,3 +1,4 @@
+
 import asyncio
 import json
 from pathlib import Path
@@ -27,50 +28,33 @@ nest_asyncio.apply()
 # ==============================================================================
 
 async def show_available_commands():
-    """Affiche toutes les commandes disponibles pour la magic."""
+    """Show all available magic commands."""
     display(Markdown("""
-### ✨ ONTORAG - Commandes Magiques Disponibles ✨
+### ✨ LARA - Available Magic Commands ✨
 
 ---
 
-#### 🔍 **Recherche (Modes Différents)**
-- **`<question>`**: (Sans `/`) **Recherche simple et rapide** avec similarité sémantique
-- **`/simple_search <query>`**: Recherche sémantique (5 résultats)
-- **`/simple_search_more <query>`**: Recherche sémantique (10 résultats)
-- **`/search <question>`**: Recherche classique du RAG avec réponse générée
-- **`/hierarchical <q>`**: Recherche hiérarchique sur plusieurs niveaux
+#### 🔍 **Search**
+- **`<question>`**: (Without `/`) **Quick semantic search** for relevant content
 
 ---
 
-#### 🧠 **Agent Unifié (Analyse Approfondie)**
-- **`/agent <question>`**: **Analyse complète** avec l'agent unifié (Fortran + Jupyter)
-- **`/agent_reply <réponse>`**: Répond à une question de clarification de l'agent
-- **`/agent_memory`**: Affiche le résumé de la mémoire actuelle de l'agent
-- **`/agent_clear`**: Efface la mémoire de l'agent
-- **`/agent_sources`**: Affiche toutes les sources consultées dans la session
+#### 🧠 **Agent (Deep Analysis)**
+- **`/agent <question>`**: **Full analysis** with the agentic rag (parser Jupyter)
 
 ---
 
-#### 📁 **Gestion des Documents**
-- **`/add_docs <var_name>`**: Ajoute des documents depuis une variable Python
-- **`/list`**: Liste tous les documents indexés
-- **`/stats`**: Affiche les statistiques du RAG
+#### ⚡ **Execution on HPC**
+- **`/execute`**: Runs the last code snippet contained in the message on the HPC. Must be an unique fonction contain import
 
 ---
 
-#### ❓ **Aide**
-- **`/help`**: Affiche ce message d'aide
+### 🎯 **When to Use Each Mode?**
 
----
-
-### 🎯 **Quand utiliser quel mode ?**
-
-| Mode | Cas d'usage | Vitesse | Précision |
-|------|-------------|---------|-----------|
-| **Recherche simple** (`query`) | Recherche rapide de contenu | ⚡⚡⚡ | 🎯🎯 |
-| **Recherche classique** (`/search`) | Question avec réponse générée | ⚡⚡ | 🎯🎯🎯 |
-| **Agent unifié** (`/agent`) | Analyse complexe, multi-fichiers | ⚡ | 🎯🎯🎯🎯 |
-| **Recherche hiérarchique** (`/hierarchical`) | Recherche structurée par niveaux | ⚡ | 🎯🎯🎯 |
+| Mode | Use Case | Speed | Accuracy |
+|------|----------|-------|----------|
+| **Simple Search** (`query`) | Quick lookup of content | ⚡⚡⚡ | 🎯🎯 |
+| **Unified Agent** (`/agent`) | Complex, multi-file analysis | ⚡ | 🎯🎯🎯🎯 |
 
 """))
 
@@ -122,7 +106,8 @@ class OntoRAGMagic(Magics):
         self.rag = None
         self._initialized = False
         self.last_agent_response = None
-        print("✨ OntoRAG Magic prête. Initialisation au premier usage...")
+        self.first_turn = True
+        print("✨ OntoRAG Magic prêt. Initialisation au premier usage...")
 
     async def _initialize_rag(self):
         """Initialisation asynchrone du moteur RAG."""
@@ -130,7 +115,6 @@ class OntoRAGMagic(Magics):
         self.rag = OntoRAG(storage_dir=STORAGE_DIR, ontology_path=ONTOLOGY_PATH_TTL)
         await self.rag.initialize()
         self._initialized = True
-        print("✅ Moteur OntoRAG initialisé et prêt.")
 
     async def _handle_agent_run(self, user_input: str):
         """Gère un tour de conversation avec l'agent unifié."""
@@ -405,80 +389,61 @@ class OntoRAGMagic(Magics):
             display(Markdown(result_md))
 
     async def _handle_execute(self):
-        """Récupère la dernière cellule commentaire, extrait le code avec le LLM et l'affiche."""
+        """Récupère le code de la réponse structurée et l'exécute sur le HPC."""
         try:
             # 1. Vérifier qu'on a une réponse d'agent récente
             if not self.last_agent_response:
                 display(Markdown(
                     "❌ **Aucune réponse d'agent récente trouvée**\n\nUtilisez d'abord `/agent <question>` puis `/execute`"))
                 return
-            # 3. Construire le prompt pour le LLM
-            system_prompt = """You are a code extraction expert. Your job is to extract executable Python code from comments and text descriptions.
 
-    RULES:
-    - Extract ONLY the Python code that can be executed
-    - Remove ALL comments, docstrings, and explanatory text
-    - Return ONLY the raw, executable Python code
-    - Do not add any explanations or markdown formatting
-    - If there's no executable code, return "# No executable code found"
-    - Preserve the logical structure and indentation of the code"""
+            # 2. Vérifier qu'on a une réponse structurée avec du code
+            if (not hasattr(self.last_agent_response, 'structured_answer') or
+                    not self.last_agent_response.structured_answer or
+                    not self.last_agent_response.structured_answer.code_examples):
+                display(
+                    Markdown("❌ **Aucun code trouvé dans la réponse**\n\nL'agent n'a pas fourni d'exemple de code."))
+                return
 
-            user_prompt = f"""Extract the executable Python code from this text/comment:
+            # 3. Récupérer le premier exemple de code Python
+            code_examples = self.last_agent_response.structured_answer.code_examples
+            python_code = None
+            explanation = None
+            for example in code_examples:
+                if example.language.lower() in ['python', 'py']:
+                    python_code = example.code
+                    explanation = example.explanation
+                    break
 
-    ```
-    {self.last_agent_response}
-    ```
+            if not python_code:
+                display(Markdown("❌ **Aucun code Python trouvé**\n\nLes exemples ne sont pas en Python."))
+                return
 
-    Return ONLY the raw Python code without any comments or explanations:"""
+            # 4. Afficher et exécuter
+            display(Markdown(f"### 🚀 Démarrage de l'agent HPC..."))
+            print(f"📝 Exécution: {explanation}")
 
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
+            chat = Chat(model="gpt-5")
+            message = f"""
+    Use the remote_run_code tool to run the following python function on 'robin-ubuntu':
+    function_source='{python_code}', with function_args={{}}
+    """
 
-            # 4. Appeler le LLM
-            print("  🤖 Extraction du code avec le LLM...")
-            extracted_code = await self.rag.rag_engine.llm_provider.generate_response(
-                messages,
-                temperature=0.1  # Température basse pour plus de précision
-            )
-
-            # 5. Nettoyer la réponse (enlever les balises markdown si présentes)
-            extracted_code = extracted_code.strip()
-            if extracted_code.startswith('```python'):
-                extracted_code = extracted_code[9:]  # Enlever ```python
-            if extracted_code.startswith('```'):
-                extracted_code = extracted_code[3:]  # Enlever ```
-            if extracted_code.endswith('```'):
-                extracted_code = extracted_code[:-3]  # Enlever ``` final
-
-            extracted_code = extracted_code.strip()
-
-
-            # 6. Afficher le résultat
-            if extracted_code and extracted_code != "# No executable code found":
-                display(Markdown(f"""### 🚀 Start the HPC agent..."""))
-                chat = Chat(model="gpt-5")
-                message = f"""
-                Use the remote_run_code tool to run the following python function on 'robin-ubuntu':
-                function_source='{extracted_code}, with function_args={{}}'
-                """
-
-                await chat.chat(message)
-                chat.print_history()
-            else:
-                display(Markdown(f"""### ❌ No code found..."""))
+            await chat.chat(message)
+            chat.print_history()
 
         except Exception as e:
-            print(f"❌ Erreur lors de l'extraction du code: {e}")
+            print(f"❌ Erreur lors de l'exécution du code: {e}")
             import traceback
             traceback.print_exc()
 
     @line_cell_magic
     def rag(self, line, cell=None):
         """Magic command principale pour interagir avec OntoRAG."""
-
         async def main():
+            if self.first_turn:
+                await show_available_commands()
+                self.first_turn = False
             if not self._initialized:
                 await self._initialize_rag()
 
@@ -569,19 +534,8 @@ class OntoRAGMagic(Magics):
                 import traceback
                 traceback.print_exc()
 
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # Déjà dans une boucle (Jupyter), utiliser create_task
-                task = asyncio.create_task(main())
-                return task
-            else:
-                # Pas de boucle, utiliser run
-                return asyncio.run(main())
-        except RuntimeError:
-            # Fallback
-            return asyncio.run(main())
-        #asyncio.run(main())
+        asyncio.run(main())
+
 
 
 # ==============================================================================

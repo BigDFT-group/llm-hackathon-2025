@@ -22,7 +22,7 @@ class Chat:
             openai_key = get_openai_key(api_key_path=API_KEY_PATH)
             if openai_key == "":
                 openai_key = getpass.getpass("Please enter the OpenAI API key:")
-            os.environ["OPENAI_API_KEY"] = openai_key
+                os.environ["OPENAI_API_KEY"] = openai_key
         
         # create the agent
         self.model = ChatOpenAI(model=model, temperature=0)
