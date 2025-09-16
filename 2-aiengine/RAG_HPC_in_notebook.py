@@ -118,42 +118,42 @@ class OntoRAGMagic(Magics):
 
     async def _handle_agent_run(self, user_input: str):
         """Gère un tour de conversation avec l'agent unifié."""
-        print("🧠 L'agent réfléchit...")
+        print("🧠 The agent thinks...")
         retriever = self.rag.unified_agent.semantic_retriever
 
         # Réindexation à la demande si nécessaire
         if len(retriever.chunks) == 0:
-            print("  🔄 Index vide, construction automatique...")
+            print("  🔄 Empty index, automatic construction...")
             notebook_count = retriever.build_index_from_existing_chunks(self.rag)
 
-        # ✅ UTILISER L'AGENT UNIFIÉ avec la version structurée
+        # ✅ UTILISER L'AGENT avec la version structurée
         agent_response = await self.rag.unified_agent.run(user_input, use_memory=True)
 
         if agent_response.status == "clarification_needed":
             question_from_agent = agent_response.clarification_question
-            display(Markdown(f"""### ❓ L'agent a besoin d'une clarification
+            display(Markdown(f"""### ❓ The agent needs clarification
     > {question_from_agent}
 
-    **Pour répondre, utilisez la commande :** `%rag /agent_reply <votre_réponse>`"""))
+    **To reply, use the command:** `%rag /agent_reply <your_response>`"""))
 
         elif agent_response.status == "success":
             # stockage de la dernière réponse
             self.last_agent_response = agent_response.answer
             # Affichage enrichi avec les métadonnées
-            display(Markdown(f"### ✅ Réponse finale de l'agent\n{agent_response.answer}"))
+            display(Markdown(f"### ✅ Final response from the agent\n{agent_response.answer}"))
 
             # Afficher les sources automatiquement
             if agent_response.sources_consulted:
-                sources_md = "\n## 📚 Sources consultées :\n"
+                sources_md = "\n## 📚 Sources consulted :\n"
                 for source in agent_response.sources_consulted:
                     sources_md += f"\n{source.get_citation()}"
                 display(Markdown(sources_md))
 
             # Afficher les métadonnées utiles
             metadata_md = f"""
-    ### 📊 Métadonnées de la réponse
-    - ⏱️ **Temps d'exécution**: {agent_response.execution_time_total_ms:.0f}ms
-    - 🔢 **Étapes utilisées**: {agent_response.steps_taken}/{agent_response.max_steps}
+    ### 📊 Response metadata
+    - ⏱️ **Execution time**: {agent_response.execution_time_total_ms:.0f}ms
+    - 🔢 **Steps used**: {agent_response.steps_taken}/{agent_response.max_steps}
     - 📚 **Sources consultées**: {len(agent_response.sources_consulted)}
     - 🎯 **Niveau de confiance**: {agent_response.confidence_level:.2f}
     """
@@ -307,16 +307,16 @@ class OntoRAGMagic(Magics):
         indexed_files_count = len(self.rag.unified_agent.semantic_retriever.indexed_files)
         avg_score = sum(r.get("similarity_score", 0) for r in results) / len(results)
 
-        header = f"""### 🤖 Réponse RAG : "{query}"
+        header = f"""### 🤖 RAG answer: "{query}"
 
-    📊 **Contexte :** {len(results)} chunks sélectionnés sur {total_indexed} disponibles ({indexed_files_count} notebooks) | **Score moyen :** {avg_score:.3f}
+    📊 **Context: **{len(results)} chunks selected out of {total_indexed} available ({indexed_files_count} notebooks) | **Average score:** {avg_score:.3f}
 
     ---
 
     """
 
         # Corps de la réponse
-        response_body = f"""### 💡 Réponse
+        response_body = f"""### 💡 Answer
 
     {answer}
 
@@ -325,7 +325,7 @@ class OntoRAGMagic(Magics):
     """
 
         # Sources détaillées
-        sources_section = "### 📚 Sources utilisées\n\n"
+        sources_section = "### 📚 Used sources\n\n"
         for source in sources_info:
             score_bar = "🟢" * int(source["score"] * 10) + "⚪" * (10 - int(source["score"] * 10))
             sources_section += f"""**[Source {source['index']}]** `{source['filename']}` | Score: {source['score']:.3f} {score_bar} | Tokens: {source['tokens']}\n\n"""
@@ -351,9 +351,9 @@ class OntoRAGMagic(Magics):
         total_indexed = len(self.rag.unified_agent.semantic_retriever.chunks)
         indexed_files = len(self.rag.unified_agent.semantic_retriever.indexed_files)
 
-        header = f"""### 🔍 Résultats de recherche : "{query}"
+        header = f"""### 🔍 Search result : "{query}"
 
-    📊 **{len(results)} résultat(s) trouvé(s)** sur {total_indexed} chunks indexés ({indexed_files} notebooks)
+    📊 **{len(results)} result(s) found on {total_indexed} indexed chunks ({indexed_files} notebooks)
 
     ---
     """
@@ -368,7 +368,7 @@ class OntoRAGMagic(Magics):
 
             # Tronquer le contenu si trop long
             if len(content) > 800:
-                content_preview = content[:800] + "\n\n*[...contenu tronqué...]*"
+                content_preview = content[:800] + "\n\n*[...truncated content...]*"
             else:
                 content_preview = content
 
@@ -376,7 +376,7 @@ class OntoRAGMagic(Magics):
             score_bar = "🟢" * int(score * 10) + "⚪" * (10 - int(score * 10))
 
             result_md = f"""
-    #### 📄 Résultat {i}/{len(results)}
+    #### 📄 Result {i}/{len(results)}
 
     **📁 Source :** `{source_file}` | **🎯 Score :** {score:.3f} {score_bar} | **📝 Tokens :** {tokens}
 
@@ -394,7 +394,7 @@ class OntoRAGMagic(Magics):
             # 1. Vérifier qu'on a une réponse d'agent récente
             if not self.last_agent_response:
                 display(Markdown(
-                    "❌ **Aucune réponse d'agent récente trouvée**\n\nUtilisez d'abord `/agent <question>` puis `/execute`"))
+                    "❌ **No recent agent responses found**\n\nFirst use `/agent <question>` then `/execute`"))
                 return
 
             # 2. Vérifier qu'on a une réponse structurée avec du code
@@ -402,7 +402,7 @@ class OntoRAGMagic(Magics):
                     not self.last_agent_response.structured_answer or
                     not self.last_agent_response.structured_answer.code_examples):
                 display(
-                    Markdown("❌ **Aucun code trouvé dans la réponse**\n\nL'agent n'a pas fourni d'exemple de code."))
+                    Markdown("❌ **No code found in the response**\n\nThe agent did not provide a code example."))
                 return
 
             # 3. Récupérer le premier exemple de code Python
@@ -416,12 +416,12 @@ class OntoRAGMagic(Magics):
                     break
 
             if not python_code:
-                display(Markdown("❌ **Aucun code Python trouvé**\n\nLes exemples ne sont pas en Python."))
+                display(Markdown("❌ **No Python code found**\n\nThe examples are not in Python."))
                 return
 
             # 4. Afficher et exécuter
-            display(Markdown(f"### 🚀 Démarrage de l'agent HPC..."))
-            print(f"📝 Exécution: {explanation}")
+            display(Markdown(f"### 🚀 Starting the HPC agent..."))
+            print(f"📝 Execution: {explanation}")
 
             chat = Chat(model="gpt-5")
             message = f"""
@@ -433,7 +433,7 @@ class OntoRAGMagic(Magics):
             chat.print_history()
 
         except Exception as e:
-            print(f"❌ Erreur lors de l'exécution du code: {e}")
+            print(f"❌ Error while executing code: {e}")
             import traceback
             traceback.print_exc()
 
@@ -460,43 +460,43 @@ class OntoRAGMagic(Magics):
                 if command.startswith('/'):
                     # --- COMMANDES DE L'AGENT UNIFIÉ ---
                     if command == '/agent':
-                        print("💫 Commande : /agent", args)
+                        print("💫 Command : /agent", args)
                         await self._handle_agent_run(args)
 
                     elif command == '/agent_reply':
-                        print("💬 Réponse utilisateur :", args)
+                        print("💬 User response :", args)
                         await self._handle_agent_run(args)
 
                     elif command == '/agent_memory':
                         """Affiche le résumé de la mémoire de l'agent."""
                         memory_summary = self.rag.unified_agent.get_memory_summary()
-                        display(Markdown(f"### 🧠 Mémoire de l'agent\n{memory_summary}"))
+                        display(Markdown(f"### 🧠 Agent memory\n{memory_summary}"))
 
                     elif command == '/agent_clear':
                         """Efface la mémoire de l'agent."""
                         self.rag.unified_agent.clear_memory()
-                        display(Markdown("### 🧹 Mémoire de l'agent effacée"))
+                        display(Markdown("### 🧹 Agent memory cleared"))
 
                     elif command == '/agent_sources':
                         """Affiche toutes les sources utilisées dans la session."""
                         sources = self.rag.unified_agent.get_sources_used()
                         if sources:
-                            sources_md = f"### 📚 Sources de la session ({len(sources)} références)\n"
+                            sources_md = f"### 📚 Session sources ({len(sources)} references)\n"
                             for source in sources:
                                 sources_md += f"\n{source.get_citation()}"
                             display(Markdown(sources_md))
                         else:
-                            display(Markdown("### 📚 Aucune source consultée dans cette session"))
+                            display(Markdown("### 📚 No sources consulted in this session"))
 
                     elif command == '/add_docs':
                         var_name = args.strip()
                         documents_to_add = self.shell.user_ns.get(var_name)
                         if documents_to_add is None:
-                            print(f"❌ Variable '{var_name}' non trouvée.")
+                            print(f"❌ Variable '{var_name}' not found.")
                             return
-                        print(f"📚 Ajout de {len(documents_to_add)} documents...")
+                        print(f"📚 Adding {len(documents_to_add)} documents...")
                         results = await self.rag.add_documents_batch(documents_to_add, max_concurrent=MAX_CONCURRENT)
-                        print(f"✅ Ajout terminé: {sum(results.values())}/{len(results)} succès.")
+                        print(f"✅ Addition complete: {sum(results.values())}/{len(results)} successes.")
 
                     elif command == '/list':
                         docs = self.rag.list_documents()
@@ -504,7 +504,7 @@ class OntoRAGMagic(Magics):
 
                     elif command == '/stats':
                         stats = self.rag.get_statistics()
-                        display(Markdown(f"### 📊 Statistiques OntoRAG\n```json\n{json.dumps(stats, indent=2)}\n```"))
+                        display(Markdown(f"### 📊 Statistic OntoRAG\n```json\n{json.dumps(stats, indent=2)}\n```"))
 
                     elif command == '/search':
                         result = await self.rag.query(args, max_results=MAX_RESULTS)
@@ -518,19 +518,19 @@ class OntoRAGMagic(Magics):
                         await show_available_commands()
 
                     elif command == '/execute':
-                        print("🚀 Extraction et exécution de code de la dernière cellule commentaire...")
+                        print("🚀 Extracting and executing code from the last comment cell...")
                         await self._handle_execute()
 
                     else:
-                        print(f"❌ Commande inconnue: '{command}'.")
+                        print(f"❌ Unknow command: '{command}'.")
                         await show_available_commands()
 
                 else:  # Requête en langage naturel directe
-                    print("🤖 Requête directe via SimpleRetriever...")
+                    print("🤖 Direct request via SimpleRetriever...")
                     await self._handle_simple_search(query, max_results=5)
 
             except Exception as e:
-                print(f"❌ Une erreur est survenue: {e}")
+                print(f"❌ Error: {e}")
                 import traceback
                 traceback.print_exc()
 
