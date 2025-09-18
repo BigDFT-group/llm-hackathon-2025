@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Dict, Any, List, Tuple
 import sys
 import nest_asyncio
-
+from IPython import get_ipython
+from IPython.core.display import HTML
 
 from OntoFlow.agent.Onto_wa_rag.Integration_fortran_RAG import OntoRAG
 from OntoFlow.agent.Onto_wa_rag.CONSTANT import (
@@ -18,6 +19,7 @@ from chat import Chat
 # --- Imports IPython Magic ---
 from IPython.core.magic import Magics, magics_class, line_cell_magic
 from IPython.display import display, Markdown
+from bigdft_notebook_assistant import BigDFTNotebookAssistant, HAS_PY3DMOL, HAS_NGLVIEW
 
 # Appliquer nest_asyncio pour permettre l'utilisation d'asyncio dans un environnement déjà bouclé (comme Jupyter)
 nest_asyncio.apply()
@@ -107,6 +109,7 @@ class OntoRAGMagic(Magics):
         self._initialized = False
         self.last_agent_response = None
         self.first_turn = True
+        self.bigdft_assistant = None
         print("✨ OntoRAG Magic prêt. Initialisation au premier usage...")
 
     async def _initialize_rag(self):
@@ -114,17 +117,13 @@ class OntoRAGMagic(Magics):
         print("🚀 Initialisation du moteur OntoRAG (une seule fois)...")
         self.rag = OntoRAG(storage_dir=STORAGE_DIR, ontology_path=ONTOLOGY_PATH_TTL)
         await self.rag.initialize()
+        # Initialiser l'assistant BigDFT
+        self.bigdft_assistant = BigDFTNotebookAssistant(rag_system=self.rag)
         self._initialized = True
 
     async def _handle_agent_run(self, user_input: str):
         """Gère un tour de conversation avec l'agent unifié."""
         print("🧠 The agent thinks...")
-        retriever = self.rag.unified_agent.semantic_retriever
-
-        # Réindexation à la demande si nécessaire
-        if len(retriever.chunks) == 0:
-            print("  🔄 Empty index, automatic construction...")
-            notebook_count = retriever.build_index_from_existing_chunks(self.rag)
 
         # ✅ UTILISER L'AGENT avec la version structurée
         agent_response = await self.rag.unified_agent.run(user_input, use_memory=True)
@@ -197,25 +196,10 @@ class OntoRAGMagic(Magics):
             display(Markdown("❌ **Agent unifié non disponible**\n\nUtilisez `/search` pour la recherche classique."))
             return
 
-        retriever = self.rag.unified_agent.semantic_retriever
-
-        # Réindexation à la demande si nécessaire
-        if len(retriever.chunks) == 0:
-            print("  🔄 Index vide, construction automatique...")
-            notebook_count = retriever.build_index_from_existing_chunks(self.rag)
-
-            if notebook_count == 0:
-                display(Markdown(f"""❌ **Aucun notebook disponible**
-
-    Les documents indexés ne contiennent pas de notebooks Jupyter (.ipynb).
-
-    **Alternatives :**
-    - `/search {query}` pour la recherche classique
-    - `/list` pour voir les documents disponibles"""))
-                return
-
         # 1. Effectuer la recherche sémantique
-        results = retriever.query(query, k=max_results)
+        #results = retriever.query(query, k=max_results)
+        results = await self.rag.rag_engine.search(query=query, top_k=max_results)
+        #results = self.rag.query(query=query, top_k=max_results)
 
         if not results:
             display(Markdown(f"""### 🔍 Recherche : "{query}"
@@ -303,8 +287,9 @@ class OntoRAGMagic(Magics):
         """Affiche la réponse RAG complète avec métadonnées."""
 
         # En-tête avec statistiques
-        total_indexed = len(self.rag.unified_agent.semantic_retriever.chunks)
-        indexed_files_count = len(self.rag.unified_agent.semantic_retriever.indexed_files)
+        document_store = self.rag.rag_engine.document_store
+        total_indexed = document_store.get_total_chunks_count()
+        indexed_files_count = document_store.get_document_count()
         avg_score = sum(r.get("similarity_score", 0) for r in results) / len(results)
 
         header = f"""### 🤖 RAG answer: "{query}"
@@ -348,8 +333,9 @@ class OntoRAGMagic(Magics):
         """Affiche les résultats de la recherche simple de manière attractive."""
 
         # En-tête avec statistiques
-        total_indexed = len(self.rag.unified_agent.semantic_retriever.chunks)
-        indexed_files = len(self.rag.unified_agent.semantic_retriever.indexed_files)
+        document_store = self.rag.rag_engine.document_store
+        total_indexed = document_store.get_total_chunks_count()
+        indexed_files = document_store.get_document_count()
 
         header = f"""### 🔍 Search result : "{query}"
 
@@ -437,6 +423,553 @@ class OntoRAGMagic(Magics):
             import traceback
             traceback.print_exc()
 
+    async def _display_bigdft_result(self, result: Dict[str, Any]):
+        """Affiche les résultats de l'assistant BigDFT de manière structurée."""
+
+        status = result.get('status', 'unknown')
+
+        # 🎯 Dispatch vers la méthode d'affichage appropriée
+        display_methods = {
+            # Démarrage et bienvenue
+            'started': self._display_welcome,
+
+            # Système moléculaire
+            'system_created': self._display_system_created,
+            'need_coordinates': self._display_coordinate_request,
+            'need_more_info': self._display_info_request,
+            'system_proposed_structured': self._display_system_proposed_structured,
+
+            # Configuration calcul
+            'code_ready': self._display_code_ready,
+            'configuration_updated': self._display_config_updated,
+            'need_clarification': self._display_clarification,
+
+            # Exécution
+            'execution_help': self._display_execution_help,
+            'config_display': self._display_current_config,
+            'code_regenerated': self._display_code_regenerated,
+
+            # Réponses et aide
+            'rag_response': self._display_rag_response,
+            'ready': self._display_ready_status,
+
+            'error': self._display_error,
+            'no_changes': self._display_no_changes,
+            'plan_awaits_confirmation': self._display_pass_through,
+            'final_analysis_ready': self._display_final_analysis_result,
+
+            'unknown': self._display_unknown_status
+        }
+
+        # Exécuter la méthode d'affichage appropriée
+        display_method = display_methods.get(status, self._display_unknown_status)
+        await display_method(result)
+
+    # ============================================================================
+    # MÉTHODES D'AFFICHAGE SPÉCIALISÉES
+    # ============================================================================
+
+    async def _display_pass_through(self, result: Dict[str, Any]):
+        """
+        Une méthode d'affichage asynchrone qui ne fait rien.
+        Utilisée pour les statuts qui ont déjà géré leur propre affichage en amont,
+        comme la confirmation d'un plan.
+        """
+        pass
+
+    async def _display_welcome(self, result: Dict[str, Any]):
+        """Affiche le message de bienvenue."""
+        message = result.get('message', '')
+        display(Markdown(message))
+
+    async def _display_system_proposed_structured(self, result: Dict[str, Any]):
+        """Affiche une réponse structurée BigDFT et exécute directement la visualisation."""
+
+        structured_response = result.get('structured_response')
+        if not structured_response:
+            return await self._display_error({"message": "Réponse structurée manquante"})
+
+        # Résumé exécutif
+        display(Markdown(f"### ✅ {structured_response.executive_summary}"))
+
+        # Informations sur la molécule
+        if structured_response.molecule_proposal:
+            mol = structured_response.molecule_proposal
+            molecule_md = f"""
+    ### 🧪 Molécule proposée : {mol.name}
+    - **Atomes :** {len(mol.atoms)}
+    - **Charge :** {mol.charge}  
+    - **Multiplicité :** {mol.multiplicity}
+    - **Confiance :** {mol.confidence:.1%}
+    - **Géométrie :** {mol.geometry_type}
+
+    **Explication :** {mol.explanation}
+    """
+            display(Markdown(molecule_md))
+
+        # ✅ SOLUTION SIMPLE : Créer et exécuter directement
+        if structured_response.visualization_code:
+            await self._create_and_run_visualization(structured_response.molecule_proposal)
+
+        # Instructions suivantes
+        display(Markdown(f"### ➡️ Prochaines étapes\n{structured_response.next_instructions}"))
+
+    async def _create_and_run_visualization(self, molecule_proposal):
+        """Crée une nouvelle cellule de notebook avec le code de visualisation pour que l'utilisateur l'exécute."""
+
+        try:
+            # 1. Extraire les données de la molécule (identique)
+            molecule_data = {
+                "name": molecule_proposal.name,
+                "charge": molecule_proposal.charge,
+                "multiplicity": molecule_proposal.multiplicity,
+                "atoms": [
+                    {"element": atom.element, "position": atom.position}
+                    for atom in molecule_proposal.atoms
+                ]
+            }
+
+            # 2. Générer le template de code de visualisation (identique)
+            visualization_code = f"""
+# --- Cellule générée par l'Assistant BigDFT ---
+# 🧪 Visualisation de {molecule_data['name']}
+# ✏️ Modifiez les coordonnées ci-dessous puis ré-exécutez cette cellule (Shift+Entrée).
+
+# Données moléculaires modifiables
+molecule_data = {{
+    "name": "{molecule_data['name']}",
+    "charge": {molecule_data['charge']},
+    "multiplicity": {molecule_data['multiplicity']},
+    "atoms": ["""
+
+            for atom in molecule_data["atoms"]:
+                pos = atom["position"]
+                visualization_code += f"""
+        {{"element": "{atom['element']}", "position": [{pos[0]:.6f}, {pos[1]:.6f}, {pos[2]:.6f}]}},"""
+
+            visualization_code += f"""
+    ]
+}}
+
+# Génération du format XYZ pour la visualisation
+def generate_xyz():
+    lines = [str(len(molecule_data["atoms"]))]
+    lines.append(f"{{molecule_data['name']}} - Modifiable par l'utilisateur")
+    for atom in molecule_data["atoms"]:
+        pos = atom["position"]
+        lines.append(f"{{atom['element']:2s}} {{pos[0]:12.6f}} {{pos[1]:12.6f}} {{pos[2]:12.6f}}")
+    return "\\n".join(lines)
+
+xyz_content = generate_xyz()
+
+# Visualisation 3D avec py3Dmol
+try:
+    import py3Dmol
+    print("🧪 Génération de la visualisation 3D interactive...")
+
+    view = py3Dmol.view(width=700, height=500)
+    view.addModel(xyz_content, 'xyz')
+    view.setStyle({{'stick': {{'radius': 0.15}}, 'sphere': {{'radius': 0.4}}}})
+    view.setBackgroundColor('#f8f9fa')
+    view.zoomTo()
+    view.show()
+
+    print(f"✅ Molécule {{molecule_data['name']}} visualisée !")
+    print(f"⚛️  {{len(molecule_data['atoms'])}} atomes | Charge: {{molecule_data['charge']}}")
+    print("\\n💡 Pour continuer, tapez '%rag /discuss ok' dans la cellule magique suivante.")
+
+except ImportError:
+    print("⚠️ py3Dmol n'est pas installé. Installation : pip install py3Dmol")
+    print("📊 Structure au format XYZ :")
+    print(xyz_content)
+"""
+
+            # --- PARTIE CORRIGÉE ---
+            # 3. Utiliser l'API IPython pour créer la cellule SANS l'exécuter
+            ipython = get_ipython()
+            if not ipython:
+                raise RuntimeError("L'environnement IPython est introuvable. Impossible de créer la cellule.")
+
+            # Message d'instruction clair pour l'utilisateur
+            display(Markdown(
+                "### 📝 Cellule de visualisation créée ! 👇\n\n"
+                "**Veuillez exécuter la nouvelle cellule qui vient d'apparaître ci-dessous (en cliquant dessus puis `Shift+Entrée`) pour afficher la molécule.**"
+            ))
+
+            # Crée la nouvelle cellule et y insère le code.
+            ipython.set_next_input(visualization_code)
+
+        except Exception as e:
+            print(f"❌ Erreur critique lors de la création de la cellule : {e}")
+            # Le fallback est toujours utile en cas de problème
+            await self._fallback_display_code(visualization_code,
+                                              "Code de visualisation de la molécule")
+
+    async def _fallback_display_code(self, code: str, description: str):
+        """Fallback : affiche le code de manière copiable si JavaScript échoue."""
+
+        display(Markdown(f"### ⚠️ Création automatique échouée"))
+        display(Markdown(f"**{description}**"))
+        display(Markdown("**Copiez ce code dans une nouvelle cellule :**"))
+
+        # Utiliser un bloc de code avec bouton de copie
+        display(Markdown(f"```python\n{code}\n```"))
+
+        # Instructions claires
+        display(Markdown("""
+    ### 📋 Instructions :
+    1. **Créez une nouvelle cellule** (bouton + ou Insert > Cell Below)
+    2. **Copiez le code ci-dessus** 
+    3. **Collez dans la nouvelle cellule**
+    4. **Exécutez la cellule** (Shift+Enter)
+    5. **Modifiez les coordonnées** si nécessaire et ré-exécutez
+    """))
+
+    async def _display_system_created(self, result: Dict[str, Any]):
+        """Affiche la confirmation de création du système avec visualisation."""
+        message = result.get('message', 'Système créé !')
+
+        display(Markdown(f"### ✅ {message}"))
+
+        # Informations du système
+        system_info = result.get('system_info', {})
+        if system_info:
+            info_md = f"""
+    ### 🧪 Système moléculaire
+    - **Nom :** {system_info.get('name', 'N/A')}
+    - **Nombre d'atomes :** {len(system_info.get('atoms', []))}
+    - **Charge :** {system_info.get('charge', 0)}
+    - **Multiplicité :** {system_info.get('multiplicity', 1)}
+    """
+            display(Markdown(info_md))
+
+        # Visualisation 3D
+        visualization = result.get('visualization')
+        if visualization:
+            display(Markdown("### 🔬 Structure 3D"))
+            await self._display_3d_structure(visualization)
+
+        display(Markdown("### ➡️ **Prochaine étape :** Configuration du calcul DFT"))
+
+    async def _display_coordinate_request(self, result: Dict[str, Any]):
+        """Affiche une demande de coordonnées atomiques."""
+        message = result.get('message', '')
+
+        display(Markdown(f"### 📝 {message}"))
+
+        example = result.get('example', '')
+        if example:
+            display(Markdown(f"**Exemple de format :**\n```\n{example}\n```"))
+
+        suggestions = result.get('suggestions', [])
+        if suggestions:
+            suggestions_md = "### 💡 Format attendu :\n" + "\n".join([f"- {s}" for s in suggestions])
+            display(Markdown(suggestions_md))
+
+    async def _display_info_request(self, result: Dict[str, Any]):
+        """Affiche une demande d'informations supplémentaires."""
+        message = result.get('message', '')
+
+        display(Markdown(f"### 🤔 {message}"))
+
+        suggestions = result.get('suggestions', [])
+        if suggestions:
+            suggestions_md = "### 💡 Suggestions :\n" + "\n".join([f"- {s}" for s in suggestions])
+            display(Markdown(suggestions_md))
+
+    async def _display_code_ready(self, result: Dict[str, Any]):
+        """Affiche la confirmation que le code est prêt ET AFFICHE LE CODE LUI-MEME."""
+        message = result.get('message', 'Code prêt !')
+
+        display(Markdown(f"### ✅ {message}"))
+
+        # Configuration résumée (inchangée)
+        config = result.get('config_summary', {})
+        if config:
+            config_md = f"""
+    ### ⚙️ Configuration du calcul
+    - **Fonctionnelle DFT :** {config.get('functional', 'PBE')}
+    - **Base atomique :** {config.get('basis_set', 'SZ')}
+    - **Optimisation géométrie :** {'✅ Activée' if config.get('optimize', False) else '❌ Désactivée'}
+    """
+            display(Markdown(config_md))
+
+        # --- AJOUT IMPORTANT : AFFICHER LE CODE GÉNÉRÉ ---
+        bigdft_code = result.get('code')
+        if bigdft_code:
+            display(Markdown("### 📄 Code PyBigDFT généré"))
+            display(Markdown(
+                "Voici le code qui sera envoyé au HPC lorsque vous utiliserez la commande `/execute`."
+            ))
+            # On affiche le code dans un bloc python formaté
+            display(Markdown(f"```python\n{bigdft_code}\n```"))
+        # ----------------------------------------------------
+
+        # Préparation pour l'exécution (inchangée)
+        display(Markdown("""
+    ### 🚀 Prêt pour l'exécution !
+
+    Vous pouvez maintenant lancer ce code sur le HPC.
+
+    **Pour lancer le calcul :**
+    ```
+    %rag /execute
+    ```
+
+    **Autres actions disponibles :**
+    - `/discuss_status` : Voir l'état de la session
+    - `/discuss <modification>` : Modifier la configuration (ex: `/discuss use B3LYP`)
+    """))
+
+        # Stocker le code pour /execute (inchangée)
+        await self._prepare_code_for_execution(result)
+
+    async def _display_config_updated(self, result: Dict[str, Any]):
+        """Affiche les modifications de configuration."""
+        message = result.get('message', 'Configuration mise à jour !')
+
+        display(Markdown(f"### ✅ {message}"))
+
+        # Changements apportés
+        changes = result.get('changes', [])
+        if changes:
+            changes_md = "### 🔧 Modifications apportées :\n" + "\n".join([f"- ✨ {c}" for c in changes])
+            display(Markdown(changes_md))
+
+        # Configuration finale
+        config = result.get('config_summary', {})
+        if config:
+            config_md = f"""
+    ### ⚙️ Configuration finale
+    - **Fonctionnelle :** {config.get('functional', 'N/A')}
+    - **Base :** {config.get('basis_set', 'N/A')}
+    - **Optimisation :** {'✅' if config.get('optimize', False) else '❌'}
+    - **Spin polarisé :** {'✅' if config.get('spin_polarized', False) else '❌'}
+    """
+            display(Markdown(config_md))
+
+        display(Markdown("### 🚀 **Utilisez `/execute` pour lancer le calcul**"))
+
+        # Stocker le code pour /execute
+        await self._prepare_code_for_execution(result)
+
+    async def _display_clarification(self, result: Dict[str, Any]):
+        """Affiche une demande de clarification."""
+        message = result.get('message', '')
+
+        display(Markdown(f"### 🤔 Clarification nécessaire\n{message}"))
+
+        suggestions = result.get('suggestions', [])
+        if suggestions:
+            suggestions_md = "### 💡 Suggestions :\n" + "\n".join([f"- {s}" for s in suggestions])
+            display(Markdown(suggestions_md))
+
+    async def _display_execution_help(self, result: Dict[str, Any]):
+        """Affiche l'aide pour l'exécution."""
+        message = result.get('message', '')
+        display(Markdown(message))
+
+        if result.get('ready_for_execute', False):
+            display(Markdown("### 🎯 **Action recommandée :** `%rag /execute`"))
+
+    async def _display_current_config(self, result: Dict[str, Any]):
+        """Affiche la configuration actuelle détaillée."""
+        display(Markdown("### ⚙️ Configuration actuelle de la simulation BigDFT"))
+
+        config = result.get('config', {})
+
+        # Informations système
+        system_info = config.get('system', {})
+        system_md = f"""
+    #### 🧪 Système moléculaire
+    - **Nom :** {system_info.get('name', 'Non défini')}
+    - **Nombre d'atomes :** {system_info.get('atoms', 0)}
+    - **Charge totale :** {system_info.get('charge', 0)}
+    - **Multiplicité :** {system_info.get('multiplicity', 1)}
+    """
+        display(Markdown(system_md))
+
+        # Informations calcul
+        calc_info = config.get('calculation', {})
+        if calc_info:
+            calc_md = f"""
+    #### ⚛️ Paramètres DFT
+    - **Fonctionnelle :** {calc_info.get('functional', 'N/A')}
+    - **Base atomique :** {calc_info.get('basis_set', 'N/A')}
+    - **Optimisation géométrie :** {'✅ Activée' if calc_info.get('optimize', False) else '❌ Désactivée'}
+    - **Calcul polarisé en spin :** {'✅ Activé' if calc_info.get('spin_polarized', False) else '❌ Désactivé'}
+    """
+        else:
+            calc_md = "#### ⚛️ Paramètres DFT : **Non configurés**"
+
+        display(Markdown(calc_md))
+
+    async def _display_code_regenerated(self, result: Dict[str, Any]):
+        """Affiche la confirmation de régénération du code."""
+        message = result.get('message', 'Code régénéré !')
+
+        display(Markdown(f"### ✅ {message}"))
+        display(Markdown("Le code PyBigDFT a été mis à jour avec la configuration actuelle."))
+        display(Markdown("### 🚀 **Utilisez `/execute` pour lancer le calcul**"))
+
+        # Stocker le code pour /execute
+        await self._prepare_code_for_execution(result)
+
+    async def _display_ready_status(self, result: Dict[str, Any]):
+        """Affiche le statut prêt pour l'exécution."""
+        message = result.get('message', 'Calcul prêt !')
+
+        display(Markdown(f"### 🎯 {message}"))
+        display(Markdown("""
+    **Actions disponibles :**
+    - `%rag /execute` : Lancer le calcul sur le HPC
+    - `%rag /discuss_config` : Voir la configuration
+    - `%rag /discuss <question>` : Poser une question
+    """))
+
+    async def _display_no_changes(self, result: Dict[str, Any]):
+        """Affiche quand aucun changement n'a été détecté."""
+        message = result.get('message', '')
+
+        display(Markdown(f"### 🤷‍♂️ {message}"))
+
+        current_config = result.get('current_config', {})
+        if current_config:
+            config_md = f"""
+    ### 📋 Configuration actuelle :
+    - **Fonctionnelle :** {current_config.get('functional', 'N/A')}
+    - **Base :** {current_config.get('basis_set', 'N/A')}
+    - **Optimisation :** {'✅' if current_config.get('optimize', False) else '❌'}
+    """
+            display(Markdown(config_md))
+
+        suggestions = result.get('suggestions', [])
+        if suggestions:
+            suggestions_md = "### 💡 Modifications possibles :\n" + "\n".join([f"- {s}" for s in suggestions])
+            display(Markdown(suggestions_md))
+
+    async def _display_error(self, result: Dict[str, Any]):
+        """Affiche les erreurs."""
+        message = result.get('message', 'Une erreur est survenue')
+
+        display(Markdown(f"### ❌ Erreur\n{message}"))
+
+        # Suggestions pour résoudre l'erreur
+        display(Markdown("""
+    ### 🔧 Solutions possibles :
+    - Vérifiez votre demande et reformulez si nécessaire
+    - Utilisez `/discuss_reset` pour recommencer
+    - Consultez `/help` pour les commandes disponibles
+    """))
+
+    async def _display_unknown_status(self, result: Dict[str, Any]):
+        """Affiche un statut inconnu."""
+        status = result.get('status', 'unknown')
+        message = result.get('message', 'Statut inconnu')
+
+        display(Markdown(f"### ⚠️ Statut non géré : `{status}`\n{message}"))
+
+    # ============================================================================
+    # MÉTHODE UTILITAIRE POUR L'EXÉCUTION
+    # ============================================================================
+
+    async def _prepare_code_for_execution(self, result: Dict[str, Any]):
+        """Prépare le code BigDFT pour l'exécution via /execute."""
+        bigdft_code = result.get('code')
+
+        if bigdft_code and self.bigdft_assistant:
+            # Créer une réponse structurée pour /execute
+            from OntoFlow.agent.Onto_wa_rag.jupyter_analysis.jupyter_agent import AgentStructuredAnswerArgs, CodeExample
+            from OntoFlow.agent.Onto_wa_rag.jupyter_analysis.jupyter_agent import AgentResponse
+            from datetime import datetime
+
+            structured_response = AgentStructuredAnswerArgs(
+                executive_summary="Code PyBigDFT généré par l'assistant et prêt pour l'exécution sur HPC.",
+                code_examples=[
+                    CodeExample(
+                        language="python",
+                        code=bigdft_code,
+                        explanation="Calcul BigDFT complet avec PyBigDFT",
+                        function_name="run_bigdft_calculation",
+                        execution_ready=True,
+                        is_complete_function=True,
+                        required_modules=["BigDFT", "numpy"]
+                    )
+                ],
+                answer_type="hpc_function"
+            )
+
+            # Créer une réponse d'agent simulée pour /execute
+            fake_response = AgentResponse(
+                answer="Code BigDFT généré par l'assistant",
+                status="success",
+                query="BigDFT calculation generation",
+                session_id="bigdft_session",
+                timestamp=datetime.now(),
+                execution_time_total_ms=1000.0,
+                steps_taken=1,
+                max_steps=1,
+                structured_answer=structured_response
+            )
+
+            # Stocker pour /execute
+            self.last_agent_response = fake_response
+
+            print("💾 Code BigDFT préparé pour /execute")
+
+    async def _display_final_analysis_result(self, result: Dict[str, Any]):
+        """Affiche le résultat formaté de l'analyse finale du plan."""
+        md = f"""
+    ### 📊 Analyse Finale : {result.get('description')}
+
+    Le calcul a été effectué en utilisant la formule :
+    `{result.get('formula')}`
+
+    Avec les valeurs obtenues :
+    `{result.get('readable_formula')}`
+
+    ---
+    ### 🎉 Résultat Final : {result.get('final_result'):.4f} [Ha]
+
+    Le plan est terminé. Vous pouvez lancer une nouvelle discussion.
+    """
+        display(Markdown(md))
+
+        # On peut réinitialiser l'assistant ici si besoin
+        if self.bigdft_assistant:
+            await self.bigdft_assistant.start_discussion()
+
+    async def _display_3d_structure(self, visualization: Dict[str, Any]):
+        """Affiche une structure 3D dans le notebook."""
+
+        viz_type = visualization.get('type', 'text')
+        data = visualization.get('data', '')
+
+        if viz_type == 'py3dmol':
+            try:
+                # ✅ Import local pour éviter les erreurs PyCharm
+                import py3Dmol
+
+                view = py3Dmol.view(width=600, height=400)
+                view.addModel(data, 'xyz')
+                view.setStyle({'stick': {'radius': 0.2}, 'sphere': {'radius': 0.5}})
+                view.setBackgroundColor('white')
+                view.zoomTo()
+
+                display(HTML(view._make_html()))
+
+            except ImportError:
+                display(Markdown("❌ **py3Dmol non installé**"))
+                display(Markdown("📦 **Installation :** `pip install py3Dmol`"))
+                # Fallback vers affichage texte
+                display(Markdown("### 🔬 Structure (format XYZ)"))
+                display(Markdown(f"```\n{data}\n```"))
+
+        else:
+            # Fallback : affichage texte
+            display(Markdown("### 🔬 Structure (format XYZ)"))
+            display(Markdown(f"```\n{data}\n```"))
+
     @line_cell_magic
     def rag(self, line, cell=None):
         """Magic command principale pour interagir avec OntoRAG."""
@@ -516,6 +1049,43 @@ class OntoRAGMagic(Magics):
 
                     elif command == '/help':
                         await show_available_commands()
+
+                    elif command == '/discuss':
+                        """Démarre une discussion BigDFT interactive."""
+                        if not self.bigdft_assistant:
+                            display(Markdown("❌ **Assistant BigDFT non initialisé**"))
+                            return
+
+                        if args.strip():
+                            # Continuer une discussion
+                            result = await self.bigdft_assistant.process_message(args)
+                        else:
+                            # Nouvelle discussion
+                            result = await self.bigdft_assistant.start_discussion()
+
+                        await self._display_bigdft_result(result)
+
+                    elif command == '/discuss_status':
+                        """Affiche l'état de la discussion BigDFT."""
+                        if not self.bigdft_assistant:
+                            display(Markdown("❌ **Assistant BigDFT non initialisé**"))
+                            return
+
+                        state = self.bigdft_assistant.get_session_state()
+                        display(Markdown(f"""### 🔬 État de la Session BigDFT
+
+                    **Étape actuelle :** {state['stage']}
+                    **Système défini :** {'✅' if state['has_system'] else '❌'}
+                    **Calcul configuré :** {'✅' if state['has_calculator'] else '❌'}
+                    **Messages échangés :** {state['conversation_length']}
+                    """))
+
+                    elif command == '/discuss_reset':
+                        """Remet à zéro la discussion BigDFT."""
+                        if self.bigdft_assistant:
+                            result = await self.bigdft_assistant.start_discussion()
+                            display(Markdown("🔄 **Discussion BigDFT réinitialisée**"))
+                            await self._display_bigdft_result(result)
 
                     elif command == '/execute':
                         print("🚀 Extracting and executing code from the last comment cell...")
