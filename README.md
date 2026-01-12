@@ -1,3 +1,16 @@
+# [ARCHIVED] LARA-HPC: Hackathon 2025 Snapshot
+
+> **PROJECT STATUS: MOVED**
+>
+> This repository contains the code and documentation as developed during the Hackathon. It is preserved here for historical reference and is **no longer actively maintained**.
+>
+> **Active development continues at:**
+> **https://gitlab.com/l_sim/lara-hpc**
+>
+> Please visit the link above for the latest updates, documentation, and issues.
+
+---
+
 # LARA-HPC: A LAnguage model-powered Research Assistant for HPC
 
 Electronic-structure codes remain challenging to use, especially on High-Performance Computing (HPC) systems where job submission and post-processing require technical expertise. LLMs are progressing rapidly as assistants, but their effectiveness depends heavily on how code and documentation are structured. Our project investigates **how to write documentation that makes scientific codes “LLM-friendly.”**
